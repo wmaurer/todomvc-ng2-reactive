@@ -1,0 +1,11 @@
+<li [class.completed]="viewModel.completed" [class.editing]="viewModel.editing">
+    <div class="view">
+        <input class="toggle" type="checkbox" (click)="toggleCompletion()" [checked]="viewModel.completed">
+        <label (dblclick)="todoDblClick()">{{viewModel.title}}</label>
+        <button class="destroy" (click)="todoDeleteClick()"></button>
+    </div>
+    <input class="edit" [value]="viewModel.title" #inputEditTitle
+        (blur)="editOnBlur($event)"
+        (keyup.enter)="editOnKeyEnter($event)"
+        (keyup.esc)="editOnKeyEsc()" />
+</li>
