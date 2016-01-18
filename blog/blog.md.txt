@@ -1,0 +1,304 @@
+# Reactive Data Flow in Angular 2
+
+## Introduction
+
+The framework wars in the Javascript world are well and truly alive, and it's great time to be a developer if we can manage to avoid the fatigue that comes with the constant churn of technology. If we are lucky enough to have the opportunity to spend time looking at a couple of frameworks then there is much we can learn from each of them.
+
+Our small team of experienced developers has been building SPAs for our clients with Angular 1.x and Typescript since 2014. We've always placed great value on basing our applications on strong architectural principals, and from the start we saw the value of a component-oriented approach to build applications. Thus we've have never suffered from "scope soup" problems that others mention.
+
+The value of sticking with one technology for a while is that we've become very efficient at building functionality for our clients. Even though React was 2015's most-loved framework, we never felt the need to switch to React.
+
+Now with [Angular 2](https://angular.io) nearing release, we've been looking at that along with [React.js](https://facebook.github.io/react/) and [Cycle.js](http://cycle.js.org). Although technology is important to us, one thing we're keenly interested in is the architecture of data flow in our complex business applications. Angular 2 prescribes no pattern. React.js recommends, but does not mandate, use of a [Flux](https://facebook.github.io/flux/) architecture. However in Cycle.js, data flow architecture takes a central role, and for this reason it is very interesting.
+
+## One-way data flow
+
+A significant feature that is absent from React.js and Cycle.js is that of two-way data binding. I've come to consider this absence as an **enabler**, in that it forces you to rethink how to architect the data flow in your application. I've seen enough terrible code in the past with logic implemented in property setters to know that two-way data binding can lead to a pile of spaghetti.
+
+One-way data binding leads to a unidirectional data flow that's promoted by Facebook's Flux architecture. As an alternative to Flux, [André Staltz](https://twitter.com/andrestaltz) has presented the unidirectional [Model-View-Intent (MVI)](http://futurice.com/blog/reactive-mvc-and-the-virtual-dom) architecture, based on RxJS Observables, which he uses as the basis for [Cycle.js](http://cycle.js.org).
+
+Whilst Angular 2 does have a form of two-way data binding, it does not prescribe a data flow architecture. One of it's selling features is being pattern agnostic and that it will work with an MVC or a Flux architecture. Therefore it's up to as developers to choose an appropriate pattern.
+
+Angular2 has RxJS baked in (however it does not that mandate Observables should be used throughout the entire application), and so my first attempt and managing data flow will be based on RxJS. An MVI architecture therefore seems to be a natural fit:
+
+![Model-View-Intent Unidirectional Data Flow](/content/images/2016/01/mvi-2.png)
+
+In the MVI architecture, the data flow is based on **pure functions** or **pure transformations**. This means that declared outputs are a function of their declared inputs without any **side-causes** or **side-effects** (read this [blog](http://blog.jenkster.com/2015/12/what-is-functional-programming.html) for a more detailed explanation of Functional Programming).
+
+## A simple example: Counter
+
+As a simple example, let's start with a very simple example, a component with two buttons, `Increment` and `Decrement` which control a counter's value.
+
+### The View
+
+In Angular 2, just as in Angular 1, a component's user interface is defined in a template, and is connected to the component's implementation via bindings.
+
+In our Counter, we have two event bindings, one each for the two buttons, and we use interpolation to bind the result (I'll explain more about the `async` pipe later):
+
+```
+<div>
+    <button (click)="decrement()">Decrement</button>
+    <button (click)="increment()">Increment</button>
+    <p> Counter: {{ count | async }} </p>
+</div>
+```
+
+### The Intent
+
+Now moving to our component implementation we need to set up our reactive data flow. We start with converting the user's actions (i.e. the button clicks) into an intent.
+
+At the time of writing, Angular 2 offers no elegant way to elegantly convert a event binding listener into an Observable, so let's do it the explicit way, using `Observable.create` to create two streams of clicks:
+
+<pre><code class="typescript">
+const incrementClick$ = Observable.create(observer => {
+    this.increment = () => { observer.next(); };
+});
+const decrementClick$ = Observable.create(observer => {
+    this.decrement = () => { observer.next(); };
+});
+</code></pre>
+
+<aside>
+<p><b>The $ suffix</b></p>
+
+<p>If you're wondering what's going on with the $ suffix notation (e.g. <code>incrementClick$</code>), it's a convention used in Cycle.js to indicate a variable is an observable. I like this convention, but you're not forced to use it if you don't like it.</p>
+</aside>
+
+Now we have our observables of clicks, we need to setup the intent. For simplicity's sake, I'll set up one single intent from the two user actions (we'll see how to deal with multiple intents later in a more complex example). In this case the intent is simply a stream of actions of increment (`+1`) or decrement (`-1`). We can combine our two observables into one stream of type `Observable<number>` using the `Observable.merge` method:
+<pre><code class="typescript">
+const intent$ = Observable.merge(
+    decrementClick$.map(() => -1),
+    incrementClick$.map(() => +1)
+);
+</code></pre>
+
+### The Model
+
+Our model is simply a pure function of its inputs, which in this case is only the intent. We can use the `Observable.scan` operator (an aggregation operator that produces an intermediate result for each value of the source sequence), to add a value (defined by the intent) to the current count:
+<pre><code class="typescript">
+this.count = intent$
+    .startWith(0)
+    .scan((currentCount, value) => currentCount + value);
+</code></pre>
+
+Our model, `count` is an `Observable<number>`. The Angular 2 team has made it very easy to bind an observable to the user interface using the [async pipe](https://angular.io/docs/ts/latest/guide/pipes.html#!#the-stateful-asyncpipe-): `{{ count | async }}`, as seen in the view template above.
+
+### The Data Flow Visualised
+
+Our Counter example is complete. Here's a diagram of the the example's unidirectional data flow based on observables.
+
+![MVI Counter Example](/content/images/2016/01/counter-1.png)
+
+See the full code and a running example [here](http://plnkr.co/edit/ZkKT5bFQWXahUBSG3NHW?p=preview).
+
+## A complete Todo example
+
+The Counter example is extremely simple, but the classic Todo App gets us closer to a real-word example, especially if all the functionality defined in the [spec](https://github.com/tastejs/todomvc/blob/master/app-spec.md) is implemented. In the Todo App, we will have two components, and I'll show how we can use observables to flow data between components.
+
+### Introducing the View Model
+
+As components become more complex, we find more often that transforming the Model into the View requires some additional logic. For example in a Todo application the Model is a list of Todos, but the View requires some 'calculated fields' such as the number of active/completed Todos.
+
+In React.js or Cycle.js, the view is a JavaScript function, so it's very easy to create these extra calculated fields. In Angular the view is an HTML template with bindings. Conditionals and loops are implemented using directives. In comparison to plain JavaScript it's difficult to create functionality such as calculated fields specific for the view. Even if it were easy, I prefer not to do it as it's good practice to put as little logic as possible into the View layer.
+
+The **View Model** is a transformation of the Model specific for consumption by the View. The function that generates the View Model may add extra properies, or even change the shape of the data, depending on what the View requires. Apart from avoiding logic in the View, the View Model offers another advantage: the View Model, being a JavaScript object, is easier to test than the View.
+
+### The Todo App Data Flow
+
+The data flow for our Todo App is significantly more complex than the Counter app, but the principles remain the same. Every data flow (arrow) is a set of Observables:
+
+![Todo App Data Flow](/content/images/2016/01/todo-1.png)
+
+### The Todo component
+
+As seen in the diagram above, our Todo component has input and output data flows. An Angular 2 component defines inputs and outputs as follows:
+<pre><code class="typescript">
+@Input('todo') todo: Todo;
+@Output('delete') delete$: Observable<{ id: string }>;
+@Output('edit') edit$: Observable<{id: string, title: string}>;
+@Output('toggle') toggle$: Observable<{ id: string }>;
+</code></pre>
+
+We'll see how receive these inputs and assign these outputs later.
+
+#### The View
+<p class="small-ref">(see complete source file <a href="https://github.com/wmaurer/todomvc-ng2-reactive/blob/master/src/app/todo-item/todo-item.html">todo-item.html</a>)</p>
+
+There are two components in our Todo application. Let's start by looking at the leaf component, the Todo component. Here's the view definition along with all the bindings (trust me, your eyes get used to the Angular's bracket binding syntax pretty quickly):
+
+```
+<li [class.completed]="viewModel.completed" [class.editing]="viewModel.editing">
+    <div class="view">
+        <input class="toggle" type="checkbox"
+            (click)="toggleCompletion()"
+            [checked]="viewModel.completed" />
+        <label (dblclick)="todoDblClick()">{{viewModel.title}}</label>
+        <button class="destroy" (click)="todoDeleteClick()"></button>
+    </div>
+    <input class="edit" [value]="viewModel.title" #inputEditTitle
+        (blur)="editOnBlur($event)"
+        (keyup.enter)="editOnKeyEnter($event)"
+        (keyup.esc)="editOnKeyEsc()" />
+</li>
+```
+
+The `$event` variable being passed to handlers is the event object appropriate to the event -  in this case they're blur or keyboard events.
+
+#### The Intent
+<p class="small-ref">(see complete source file <a href="https://github.com/wmaurer/todomvc-ng2-reactive/blob/master/src/app/todo-item/todo-item.component.ts">todo-item.component.ts</a>)</p>
+
+As in the Counter example we have to turn our events into Observables. I've made a helper function `makeObservableFunction` that helps make this a little terser.
+
+<aside>
+<p><b>Event Listeners as Observables</b></p>
+<p> The <code>makeObservableFunction</code> is a <a href="https://github.com/wmaurer/todomvc-ng2-reactive/blob/master/src/app/component-utils.ts">helper function</a> that creates a function that the event binding can listen to. Any arguments passed via the event binding are passed along to the Observable. It might also be possible to do this via a decorator. Or even better, the Angular 2 team might help complete the reactive story with a built-in feature that converts a event binding into an Observable.</p>
+</aside>
+
+So what is it that a user can do with a Todo? The User can double-click to start editing, hit enter or shift focus to stop editing, can press escape to cancel editing, delete a Todo and complete a Todo. The makes for quite a few observables in our intent:
+
+<pre><code class="typescript">
+const intent: TodoItemIntent = {
+    startEdit$: makeObservableFunction<{}>(this, 'todoDblClick').share(),
+    stopEdit$: Observable.merge(
+        makeObservableFunction<string>(this, 'editOnBlur').share(),
+        makeObservableFunction<string>(this, 'editOnKeyEnter').share()
+    ),
+    cancelEdit$: makeObservableFunction<{}>(this, 'editOnKeyEsc').share(),
+    delete$: makeObservableFunction<{}>(this, 'todoDeleteClick').share(),
+    toggleTodo$: makeObservableFunction<{}>(this, 'toggleCompletion').share()
+};
+</code></pre>
+
+We also have another data source, the Todo entity itself which is an `@Input` to the Todo component. This is also converted into an observable based on the ngOnChanges lifecycle method.
+
+#### The DataFlow function
+<p class="small-ref">(see complete source file <a href="https://github.com/wmaurer/todomvc-ng2-reactive/blob/master/src/app/todo-item/todo-item.data-flow.ts">todo-item.data-flow.ts</a>)</p>
+
+Each component may have a pure function that I name, by convention, the `dataFlow()` function. The `dataFlow()` takes observables as an input (i.e. the **Intents** and other data sources) and returns observables, e.g. **Models** or **View Models**.
+
+In the case of the Todo component, we're declaratively defining our View Model which will be bound to the user interface. Here we can start to see the power of Observables, as we can combine multiple intents to create an `editing` property on the View Model:
+
+<pre><code class="typescript">
+const editing$ = Observable.merge<boolean>(
+    intent.startEdit$.map(() => true),
+    intent.stopEdit$.map(() => false),
+    intent.cancelEdit$.map(() => false)
+).startWith(false);
+
+const viewModel$ = todoProperty$
+    .combineLatest(editing$, (todoProperty, editing) => Object.assign({}, todoProperty, { editing }));
+</code></pre>
+
+We're also creating Observables which will be output properties of the component, to be used by a parent component. For example, the `toggle$` output is based on the `toggleTodo$` intent combined with the Todo entity to produce an `Observable<{ id: string }>`:
+
+<pre><code class="typescript">
+const toggle$ = intent.toggleTodo$
+    .withLatestFrom(todoProperty$, (_, todo: Todo) => todo)
+    .map(todo => ({ id: todo.id }));
+</code></pre>
+
+These output Observables will be assigned to the `@Output` properties of the component to create the data flows to parent components.
+
+#### Binding the View Model to the View
+<p class="small-ref">(see complete source file <a href="https://github.com/wmaurer/todomvc-ng2-reactive/blob/master/src/app/todo-item/todo-item.component.ts">todo-item.component.ts</a>)</p>
+
+Back to Todo component constructor, we're subscribing to the `viewModel$`. If you look at the Todo template above, notice here I'm **not using** the `async` pipe filter (like I was in the Counter example). Since all of our view's property bindings are present on a single `Observable<ViewModel>`, it quickly becomes tiresome to use the pipe filter like `(viewModel | async).completed` for every property, so it's easier just to imperatively subscribe and assign a viewModel property.
+
+Having an explicit subscribe also helps make it clear that this is a place where **side-effects** occur (updating the user interface). A further **side-effect** in the Todo component is setting the focus on a text input.
+
+```
+responses.viewModel$
+    .subscribe(viewModel => {
+        this.viewModel = viewModel;
+        setFocus(this.inputEditTitleElementRef);
+    });
+```
+
+### The Todos App component
+
+#### The Intent
+<p class="small-ref">(see complete source file <a href="https://github.com/wmaurer/todomvc-ng2-reactive/blob/master/src/app/todos/todos.component.ts">todos.component.ts</a>)</p>
+
+
+Just as we're now accustomed to, the Intent for the Todos app component is made up of user actions. Amongst other UI controls, the Todos app component has an input for adding a new control. It also has a list of Todo items with `@Output` events which signal the Todo has been edited, deleted, toggled, etc. Hooking up to event binding listeners for a component is exactly the same as with a standard HTML control.
+
+So given the following definition of a Todo item in the Todos app template:
+```
+<todo-item *ngFor="#todo of viewModel.todos"
+    [todo]="todo"
+    (delete)="delete($event)"
+    (edit)="edit($event)"
+    (toggle)="toggle($event)" />
+```
+
+... we can make observables from the outputs from the Todo item as follows:
+<pre><code class="typescript">
+const intent$ = {
+    ...
+    toggleTodo$: makeObservableFunction<{ id: string }>(this, 'toggle'),
+    ...
+}
+</code></pre>
+
+The `$event` object being passed to `(toggle)` is the type parameter of the Observable defined in the associatged `todo-item` `@Output`.
+
+#### The Todos DataFlow function
+<p class="small-ref">(see complete source file <a href="https://github.com/wmaurer/todomvc-ng2-reactive/blob/master/src/app/todos/todos.data-flow.ts">todos.data-flow.ts</a>)</p>
+
+Now we come to the most complex of `dataFlow()` functions that we've seen yet. In the Counter example, we are simply calculating a number. In the `todos-item` component, we are producing a **View Model** with an `editing` local state. However in the `todos` component, we need to manage the application state, i.e. the list of Todos and all the actions that can occur to the application state.
+
+If we look at the Redux architecture for data flow, state is held in a single store, and the only way to update the application state is to dispatch an action with an action type and a payload (e.g. `{ type: 'DELETE_TODO', id: '3' }`). A reducer, a **pure function**, is then applied to produce a new state:
+<pre><code class="typescript">
+    (state, action) => state
+</code></pre>
+
+With the MVI architecture, we can take the same concept adapted to Observables (I'll emphasize here that credit goes to André Staltz, this concept is demonstrated in the [Cycle.js Todo App](https://github.com/cyclejs/todomvc-cycle/blob/master/src/components/Todos/model.js#L69)). The action is defined by an **Intent** Observable. The type is not required as it is implicit in the Observable. The payload is carried with the Observable and delivered with the notification. Therefore a reducer transformation for deleting a Todo can be defined as follows:
+
+<pre><code class="typescript">
+const deleteTodoReducer$ = intent.deleteTodo$
+    .map(({ id }) => (todosStore: TodosStore) => ({
+        todos: todosStore.todos.filter(todo => todo.id !== id)
+    }));
+</code></pre>
+
+The action is the `deleteTodo$` intent, it is applied to the `TodosStore` (state) to produce a new `TodosStore` (state), i.e. `(state, action) => state`.
+
+Multiple reducers can be combined using `Observable.merge` to produce a single reducer transformation:
+
+<pre><code class="typescript">
+Observable.merge(addTodoReducer$, deleteTodoReducer$, editTodoReducer$, ...)
+</code></pre>
+
+## Completing the Reactive Story: managing side-effects
+
+The Todo App is good example of showing how data can flow between multiple components, and we've seen how that can work well with Angular 2 and an Observable-based MVI architecture.
+
+However a real-world application needs to do more than this: it needs to persist data (for example to local storage), or a component may request data asynchronously from a remote endpoint using HTTP. In this implementation I've naively implemented interacting with local storage directly within the **View**, with the aim of keeping the `dataFlow()` function pure.
+
+Cycle.js has the concept of **Drivers** which are used to isolate side-effects. I've purposely avoided this concept for this Todo App in order limit the scope of the project and this blog entry, however a brief explanation follows:
+
+The `dataFlow()` function is a **pure function**, which means that directly making a HTTP request is not allowed, as using a HTTP Service is both a **side-effect** (making the request), and a **side-cause** (receiving the response). In order to make such requests, the `dataFlow()` function must do so in terms of its explicit inputs and outputs:
+
+<pre><code class="typescript">
+function dataFlow(intent, httpResponses$$) {
+    ...
+    // generate model$, viewModel$ and httpRequests$
+    ...
+    return {
+        viewModel$,
+        httpRequests$
+    };
+}
+</code></pre>
+
+In order to receive data from an HTTP endpoint, the `dataFlow()` function must generate a `httpRequest$` Observable (e.g. based on an **Intent** such as a button click). The `httpRequest$` is then consumed by a **Driver** which in turn delivers a `httpResponse$$` Observable back to the `dataFlow()` function.
+
+A demonstration of how this could work within an Angular 2 application could be the basis for a future blog post.
+
+
+## Summary
+
+Angular 2 prescribes no architecture for data flow. In comparision, a data flow architecture is a core concept of Cycle.js, and Cycle.js has opened my eyes to the possibility of implementing an Observable-based reactive data flow architecture in Angular 2.
+
+I would encourage people to spend time looking at multiple frameworks and to promote the cross-pollination of ideas. It's definitely possible to take the principles of reactive data flow architecture in Cycle.js and apply them to Angular 2.
+
+My next task is to build a Angular 2 Todo app with [Dan Abramov's](https://twitter.com/dan_abramov) [Redux](http://redux.js.org). I'll [tweet](https://twitter.com/waynemaurer) when it's ready to show.
