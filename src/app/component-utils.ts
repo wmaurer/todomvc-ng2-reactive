@@ -13,7 +13,7 @@ export function makeObservableFunction<T>(target: any, functionName: string) {
         } else {
             const args = new Array(len);
             for (let i = 0; i < len; i++) {
-                args[0] = arguments[i];
+                args[i] = arguments[i];
             }
             observer.next(args);
         }
