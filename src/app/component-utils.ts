@@ -6,24 +6,19 @@ export function makeObservableFunction<T>(target: any, functionName: string) {
     const observable = Observable.create(obs => {
         observer = obs;
     });
-    target[functionName] = function() {
-        const len = arguments.length;
-        if (len === 1) {
-            observer.next(arguments[0]);
-        } else {
-            const args = new Array(len);
-            for (let i = 0; i < len; i++) {
-                args[i] = arguments[i];
-            }
+    target[functionName] = function(...args) { // leverage ES6 rest parameter to get all arguments passed to event
+        if (args.length === 1) { // for single-arg event pass it directly into Observable to simplify handling ex: .map(e => e.target.value)
+            observer.next(args[0]);
+        } else { // for event with more arguments propagate those into Observable as an array, then to get single param you can destructure array ex: .map( ([e]) => e.target.value ) 
             observer.next(args);
         }
-    }
+    };
     return observable;
 }
 
 export function observeCurrentValueFor<T>(changes$: Observable<{ [key: string]: SimpleChange }>, propertyName: string) {
     return changes$
-        .filter(changes => !!changes[propertyName])
+        .filter(changes => changes.hasOwnProperty(propertyName)) // check if there are changes for propertyName (@Input) 
         .map<T>(changes => changes[propertyName].currentValue);
 }
 
